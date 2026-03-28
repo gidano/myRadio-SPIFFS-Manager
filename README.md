@@ -10,6 +10,14 @@
 
 A myRadio webrádió SPIFFS kezelésére / Managing SPIFFS on the myRadio web radio
 
+---
+
+## Képernyőkép
+
+![myRadio Editor](https://github.com/gidano/myRadio-Editor/blob/main/myRadio_Editor.jpg)
+
+---
+
 ## HU
 
 ### Leírás
