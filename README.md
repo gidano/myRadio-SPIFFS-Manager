@@ -1,4 +1,4 @@
-# myRadio-SPIFFS-Manager
+# myRadio SPIFFS Manager
 
 <p align="center">
   <!--
