@@ -1,5 +1,13 @@
 # myRadio-SPIFFS-Manager
 
+<p align="center">
+  <!--
+  <img src="https://img.shields.io/github/downloads/gidano/myRadio-Editor/total?style=for-the-badge&cacheSeconds=60" alt="Total Downloads"> 
+  -->
+  <img src="https://img.shields.io/github/stars/gidano/myRadio-SPIFFS-Manager?style=for-the-badge" alt="Stars">
+  <img src="https://img.shields.io/github/repo-size/gidano/myRadio-SPIFFS-Manager?style=for-the-badge" alt="Repo size">
+</p>
+
 A myRadio webrádió SPIFFS kezelésére / Managing SPIFFS on the myRadio web radio
 
 ## HU
