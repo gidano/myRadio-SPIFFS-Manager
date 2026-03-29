@@ -9,6 +9,7 @@
 </p>
 
 A myRadio webrádió SPIFFS kezelésére / Managing SPIFFS on the myRadio web radio
+(<b>yoRadio SPIFFS kezelésére nem alkalmas, mert a működéséhez firmware-oldali módosításokra is szükség volt!!!<br>yoRadio is not compatible with SPIFFS because it required firmware modifications to function!!!</b>)
 
 ---
 
