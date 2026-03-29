@@ -17,8 +17,7 @@ A myRadio webrádió SPIFFS kezelésére / Managing SPIFFS on the myRadio web ra
 
 ## Képernyőkép
 
-<br>
-<img src="https://github.com/gidano/myRadio-SPIFFS-Manager/blob/main/myRadio_SPIFFS_Manager_HU-EN.jpg" alt="logo">
+<img src="https://github.com/gidano/myRadio-SPIFFS-Manager/blob/main/myRadio_SPIFFS_Manager_HU-EN.jpg" alt="screenshot">
 
 ---
 
