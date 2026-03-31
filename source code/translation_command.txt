@@ -1,2 +1,0 @@
-
-python -m PyInstaller --onefile --windowed --icon=icon.ico --add-data "icon.ico;." --version-file=version_info.txt --name "myRadio SPIFFS Manager" myradio_SPIFFS_manager.py
