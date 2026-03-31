@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import sys
 import threading
 import time
 import zipfile
@@ -19,7 +20,7 @@ except Exception:
     serial = None
     list_ports = None
 
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 CHUNK_SIZE = 96
 
 
@@ -56,6 +57,161 @@ def get_app_icon_path() -> str | None:
             return str(p)
     return None
 
+
+
+
+def is_windows_dark_mode():
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        )
+        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return value == 0
+    except Exception:
+        return False
+
+
+def apply_dark_title_bar(window):
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1)
+        for attr in (20, 19):
+            try:
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd,
+                    attr,
+                    ctypes.byref(value),
+                    ctypes.sizeof(value)
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def apply_theme(root: tk.Tk, dark: bool):
+    style = ttk.Style(root)
+
+    if dark:
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        bg = "#1e1e1e"
+        panel = "#252526"
+        fg = "#ffffff"
+        edge = "#6f6f6f"
+        select = "#3a3d41"
+
+        root.configure(bg=bg)
+
+        style.configure(".", background=bg, foreground=fg)
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure("TButton", background=panel, foreground=fg, bordercolor=edge, focusthickness=1, focuscolor=edge)
+        style.map(
+            "TButton",
+            background=[("active", "#2f3136"), ("pressed", "#2a2d31")],
+            foreground=[("disabled", "#8a8a8a")]
+        )
+
+        style.configure(
+            "TCombobox",
+            fieldbackground=panel,
+            background=panel,
+            foreground=fg,
+            arrowcolor=fg,
+            bordercolor=edge,
+            lightcolor=edge,
+            darkcolor=edge
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", panel)],
+            selectbackground=[("readonly", select)],
+            selectforeground=[("readonly", fg)]
+        )
+
+        style.configure(
+            "Treeview",
+            background=panel,
+            fieldbackground=panel,
+            foreground=fg,
+            bordercolor=edge,
+            lightcolor=edge,
+            darkcolor=edge
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#2d2d30",
+            foreground=fg,
+            bordercolor=edge,
+            lightcolor=edge,
+            darkcolor=edge
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", select)],
+            foreground=[("selected", fg)]
+        )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", "#383b40")]
+        )
+
+        style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor=panel,
+            background="#6aa2ff",
+            bordercolor=edge,
+            lightcolor=edge,
+            darkcolor=edge
+        )
+
+        style.configure(
+            "Vertical.TScrollbar",
+            background=panel,
+            troughcolor=bg,
+            arrowcolor=fg,
+            bordercolor=edge,
+            lightcolor=edge,
+            darkcolor=edge
+        )
+        style.configure(
+            "Horizontal.TScrollbar",
+            background=panel,
+            troughcolor=bg,
+            arrowcolor=fg,
+            bordercolor=edge,
+            lightcolor=edge,
+            darkcolor=edge
+        )
+
+        try:
+            root.option_add("*Background", bg)
+            root.option_add("*Foreground", fg)
+            root.option_add("*Entry.Background", panel)
+            root.option_add("*Entry.Foreground", fg)
+            root.option_add("*Text.Background", panel)
+            root.option_add("*Text.Foreground", fg)
+            root.option_add("*Listbox.Background", panel)
+            root.option_add("*Listbox.Foreground", fg)
+            root.option_add("*selectBackground", select)
+            root.option_add("*selectForeground", fg)
+        except Exception:
+            pass
+    else:
+        try:
+            style.theme_use("vista")
+        except Exception:
+            try:
+                style.theme_use(style.theme_use())
+            except Exception:
+                pass
 
 TEXT = {
     "HU": {
@@ -399,6 +555,9 @@ class App(tk.Tk):
         self.geometry("1220x800")
         self.minsize(1000, 650)
 
+        self._dark_mode = is_windows_dark_mode()
+        apply_theme(self, self._dark_mode)
+
         icon_path = get_app_icon_path()
         if icon_path:
             try:
@@ -415,6 +574,11 @@ class App(tk.Tk):
 
         self._build_ui()
         self.refresh_ports()
+        self.after(100, self._refresh_tree_scrollbar)
+        self.bind("<Configure>", lambda event: self.after_idle(self._refresh_tree_scrollbar))
+
+        if self._dark_mode:
+            self.after(50, lambda: apply_dark_title_bar(self))
 
         if serial is None:
             messagebox.showwarning(self.tr("error"), self.tr("pyserial_missing"))
@@ -476,15 +640,40 @@ class App(tk.Tk):
         self.tree.column("#0", width=760, anchor="w")
         self.tree.column("type", width=120, anchor="w")
         self.tree.column("size", width=120, anchor="e")
-        ys = ttk.Scrollbar(center, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=ys.set)
+        self.tree_ys = ttk.Scrollbar(center, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=self._on_tree_yview)
         self.tree.pack(side="left", fill="both", expand=True)
-        ys.pack(side="right", fill="y")
 
         bottom = ttk.Frame(self, padding=(8, 0, 8, 8))
         bottom.pack(fill="x")
         ttk.Label(bottom, textvariable=self.status_var).pack(side="left")
         ttk.Label(bottom, text=self.tr("footer")).pack(side="right")
+
+        self.tree.bind("<<TreeviewOpen>>", lambda event: self.after_idle(self._refresh_tree_scrollbar))
+        self.tree.bind("<<TreeviewClose>>", lambda event: self.after_idle(self._refresh_tree_scrollbar))
+
+    def _set_tree_scrollbar_visible(self, visible: bool):
+        if visible:
+            if not self.tree_ys.winfo_ismapped():
+                self.tree_ys.pack(side="right", fill="y")
+        else:
+            if self.tree_ys.winfo_ismapped():
+                self.tree_ys.pack_forget()
+
+    def _on_tree_yview(self, first, last):
+        self.tree_ys.set(first, last)
+        try:
+            self._set_tree_scrollbar_visible(not (float(first) <= 0.0 and float(last) >= 1.0))
+        except Exception:
+            self._set_tree_scrollbar_visible(True)
+
+    def _refresh_tree_scrollbar(self):
+        self.update_idletasks()
+        try:
+            first, last = self.tree.yview()
+            self._set_tree_scrollbar_visible(not (float(first) <= 0.0 and float(last) >= 1.0))
+        except Exception:
+            self._set_tree_scrollbar_visible(False)
 
     def toggle_lang(self):
         self.lang = "EN" if self.lang == "HU" else "HU"
@@ -507,6 +696,9 @@ class App(tk.Tk):
         self.tree.heading("type", text=self.tr("type"))
         self.tree.heading("size", text=self.tr("size"))
         self.status_var.set(self.tr("status_ready"))
+        apply_theme(self, self._dark_mode)
+        if self._dark_mode:
+            self.after(10, lambda: apply_dark_title_bar(self))
 
     def set_status(self, text: str):
         self.after(0, lambda: self.status_var.set(text))
@@ -652,6 +844,7 @@ class App(tk.Tk):
                     nodes[full] = node
                 parent_id = nodes[full]
                 current_path = full
+        self.after_idle(self._refresh_tree_scrollbar)
 
     def _item_remote_path(self, item_id: str) -> tuple[str, bool]:
         parts = []
