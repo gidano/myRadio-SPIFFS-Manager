@@ -17,9 +17,10 @@ A myRadio webrádió SPIFFS kezelésére / Managing SPIFFS on the myRadio web ra
 
 ## Képernyőkép
 
-<img src="https://github.com/gidano/myRadio-SPIFFS-Manager/blob/main/myRadio_SPIFFS_Manager_HU-EN_v1.1.jpg" alt="screenshot">
+<img src="https://github.com/gidano/myRadio-SPIFFS-Manager/blob/main/myRadio_SPIFFS_Manager_HU-EN_v1.2.jpg" alt="screenshot">
+<!--
 <img src="https://github.com/gidano/myRadio-SPIFFS-Manager/blob/main/myRadio_SPIFFS_Manager_HU-EN.jpg" alt="screenshot">
-
+-->
 ---
 
 ## HU
@@ -38,6 +39,7 @@ A **myRadio SPIFFS Manager** egy egyszerű Windows alkalmazás, amely lehetővé
 - Mentés visszaállítása
 - Rádió újraindítása
 - Két nyelv támogatása (HU / EN)
+- Windows sötét/világos téma használata
 - Státuszsor részletes visszajelzéssel (pl. célmappa)
 
 ### Használat
@@ -74,6 +76,7 @@ A részletes feltételeket a [LICENSE](LICENSE) fájlban találja.
 - Restore backup
 - Reboot device
 - Dual language support (HU / EN)
+- Using the Windows dark/light theme
 - Detailed status feedback (e.g. target folder)
 
 ### Usage
