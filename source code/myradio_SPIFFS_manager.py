@@ -20,7 +20,7 @@ except Exception:
     serial = None
     list_ports = None
 
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 DEFAULT_BAUDRATE = 460800
 CHUNK_SIZE = 96
 MAX_AUTO_RETRIES = 2
@@ -38,8 +38,8 @@ TEXT = {
         "restore": "Mentés visszaállítása",
         "list": "Fájllista frissítése",
         "delete": "Kijelölt törlése",
-        "upload_files": "Fájlok queue-ba",
-        "upload_folder": "Mappa queue-ba",
+        "upload_files": "Fájlok várósorba",
+        "upload_folder": "Mappa várósorba",
         "download": "Kijelölt mentése",
         "reboot": "Rádió újraindítása",
         "lang": "Nyelv: HU / EN",
@@ -77,7 +77,7 @@ TEXT = {
         "empty_folder": "A kiválasztott mappa üres.",
         "folder": "mappa",
         "file": "fájl",
-        "queue": "Feltöltési queue",
+        "queue": "Feltöltési várósor",
         "queue_name": "Név",
         "queue_target": "Cél",
         "queue_status": "Állapot",
@@ -85,35 +85,35 @@ TEXT = {
         "queue_size": "Méret",
         "queue_add_files": "Fájlok hozzáadása",
         "queue_add_folder": "Mappa hozzáadása",
-        "queue_start": "Queue indítása",
+        "queue_start": "Várósor indítása",
         "queue_cancel": "Megszakítás",
         "queue_retry": "Hibásak újra",
         "queue_remove": "Kijelölt eltávolítása",
         "queue_clear_done": "Készek törlése",
-        "queue_idle": "A queue üres.",
+        "queue_idle": "A várósor üres.",
         "queue_waiting": "Várakozik",
         "queue_uploading": "Feltöltés",
         "queue_done": "Kész",
         "queue_failed": "Hibás",
         "queue_cancelled": "Megszakítva",
         "queue_retrying": "Újrapróba",
-        "queue_running": "A queue fut.",
-        "queue_added": "A fájlok bekerültek a queue-ba.",
+        "queue_running": "A várósor fut.",
+        "queue_added": "A fájlok bekerültek a várósorba.",
         "queue_cancel_requested": "Megszakítás kérve...",
-        "queue_finished": "Queue kész.",
-        "queue_empty_start": "Nincs feltöltendő elem a queue-ban.",
+        "queue_finished": "Várósor kész.",
+        "queue_empty_start": "Nincs feltöltendő elem a várósorban.",
         "queue_file": "Aktuális fájl",
         "queue_overall": "Összesen",
         "queue_speed": "Sebesség",
         "queue_eta": "Hátralévő idő",
         "queue_index": "Fájl",
         "queue_failures": "Hibák",
-        "queue_cancelled_done": "A queue megszakadt.",
+        "queue_cancelled_done": "A várósor megszakadt.",
         "last_step": "Utolsó művelet",
         "save_selected_title": "Fájl mentése",
         "save_backup_title": "Mentés mentése ZIP fájlba",
         "open_backup_title": "Mentés kiválasztása",
-        "footer": "© 2026 gidano",
+        "footer": "2026 © gidano",
     },
     "EN": {
         "title": "myRadio SPIFFS Manager",
@@ -201,7 +201,7 @@ TEXT = {
         "save_selected_title": "Save file",
         "save_backup_title": "Save backup ZIP",
         "open_backup_title": "Choose backup ZIP",
-        "footer": "© 2026 gidano",
+        "footer": "2026 © gidano",
     },
 }
 
@@ -620,7 +620,7 @@ class App(tk.Tk):
         self._build_ui()
         self.refresh_ports()
         self.after(100, self._refresh_tree_scrollbar)
-        self.bind("<Configure>", lambda event: self.after_idle(self._refresh_tree_scrollbar))
+        self.bind("<Configure>", lambda event: self.after_idle(self._on_window_layout_change))
         if self._dark_mode:
             self.after(50, lambda: apply_dark_title_bar(self))
         if serial is None:
@@ -681,9 +681,9 @@ class App(tk.Tk):
         self.tree.heading("#0", text=self.tr("tree"))
         self.tree.heading("type", text=self.tr("type"))
         self.tree.heading("size", text=self.tr("size"))
-        self.tree.column("#0", width=430, anchor="w")
-        self.tree.column("type", width=95, anchor="w")
-        self.tree.column("size", width=85, anchor="w")
+        self.tree.column("#0", width=430, minwidth=160, anchor="w", stretch=True)
+        self.tree.column("type", width=95, minwidth=90, anchor="w", stretch=False)
+        self.tree.column("size", width=85, minwidth=80, anchor="w", stretch=False)
         self.tree_ys = ttk.Scrollbar(self.left_panel, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=self._on_tree_yview)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -704,18 +704,24 @@ class App(tk.Tk):
         self.btn_queue_cancel = ttk.Button(queue_buttons, text=self.tr("queue_cancel"), command=self.cancel_queue)
         self.btn_queue_cancel.pack(side="left", padx=2)
 
-        self.queue_tree = ttk.Treeview(self.queue_panel, columns=("target", "status", "progress", "size"), show="tree headings", height=18)
+        queue_tree_wrap = ttk.Frame(self.queue_panel)
+        queue_tree_wrap.pack(fill="both", expand=True)
+
+        self.queue_tree = ttk.Treeview(queue_tree_wrap, columns=("target", "status", "progress", "size"), show="tree headings", height=18)
         self.queue_tree.heading("#0", text=self.tr("queue_name"))
         self.queue_tree.heading("target", text=self.tr("queue_target"))
         self.queue_tree.heading("status", text=self.tr("queue_status"))
         self.queue_tree.heading("progress", text=self.tr("queue_progress"))
         self.queue_tree.heading("size", text=self.tr("queue_size"))
-        self.queue_tree.column("#0", width=150, anchor="w")
-        self.queue_tree.column("target", width=130, anchor="w")
-        self.queue_tree.column("status", width=70, anchor="w")
-        self.queue_tree.column("progress", width=60, anchor="w")
-        self.queue_tree.column("size", width=60, anchor="w")
-        self.queue_tree.pack(fill="both", expand=True)
+        self.queue_tree.column("#0", width=150, minwidth=120, anchor="w", stretch=True)
+        self.queue_tree.column("target", width=130, minwidth=120, anchor="w", stretch=True)
+        self.queue_tree.column("status", width=70, minwidth=90, anchor="w", stretch=True)
+        self.queue_tree.column("progress", width=60, minwidth=90, anchor="w", stretch=True)
+        self.queue_tree.column("size", width=60, minwidth=80, anchor="w", stretch=True)
+        self.queue_tree_ys = ttk.Scrollbar(queue_tree_wrap, orient="vertical", command=self.queue_tree.yview)
+        self.queue_tree.configure(yscrollcommand=self.queue_tree_ys.set)
+        self.queue_tree.pack(side="left", fill="both", expand=True)
+        self.queue_tree_ys.pack(side="right", fill="y")
 
         self.progress_box = ttk.LabelFrame(self.queue_panel, text=self.tr("queue_progress"), padding=8)
         self.progress_box.pack(fill="x", pady=(8, 0))
@@ -745,7 +751,8 @@ class App(tk.Tk):
         ttk.Label(grid, textvariable=self.failures_var).grid(row=2, column=1, sticky="w", pady=(4, 0))
         self.lbl_queue_overall = ttk.Label(grid, text=self.tr("queue_overall"))
         self.lbl_queue_overall.grid(row=2, column=2, sticky="w", pady=(4, 0))
-        ttk.Label(grid, textvariable=self.status_var).grid(row=2, column=3, sticky="w", pady=(4, 0))
+        self.queue_status_label = ttk.Label(grid, textvariable=self.status_var, wraplength=320, justify="left")
+        self.queue_status_label.grid(row=2, column=3, sticky="ew", pady=(4, 0))
 
         self.after(100, self._apply_initial_layout)
 
@@ -776,6 +783,51 @@ class App(tk.Tk):
         except Exception:
             self._set_tree_scrollbar_visible(False)
 
+    def _resize_left_tree_columns(self):
+        try:
+            total = self.tree.winfo_width()
+            if total <= 120:
+                return
+            type_w = max(90, min(130, int(total * 0.18)))
+            size_w = max(80, min(120, int(total * 0.16)))
+            name_w = max(160, total - type_w - size_w - 6)
+            self.tree.column("#0", width=name_w, minwidth=160, stretch=True)
+            self.tree.column("type", width=type_w, minwidth=90, stretch=False)
+            self.tree.column("size", width=size_w, minwidth=80, stretch=False)
+        except Exception:
+            pass
+
+    def _resize_queue_tree_columns(self):
+        try:
+            total = self.queue_tree.winfo_width()
+            if total <= 160:
+                return
+            name_w = max(120, int(total * 0.26))
+            target_w = max(150, int(total * 0.36))
+            status_w = max(90, int(total * 0.14))
+            progress_w = max(90, int(total * 0.12))
+            size_w = max(80, total - name_w - target_w - status_w - progress_w - 6)
+            self.queue_tree.column("#0", width=name_w, minwidth=120, stretch=True)
+            self.queue_tree.column("target", width=target_w, minwidth=150, stretch=True)
+            self.queue_tree.column("status", width=status_w, minwidth=90, stretch=False)
+            self.queue_tree.column("progress", width=progress_w, minwidth=90, stretch=False)
+            self.queue_tree.column("size", width=size_w, minwidth=80, stretch=False)
+        except Exception:
+            pass
+
+    def _update_status_wrap(self):
+        try:
+            wrap = max(180, self.progress_box.winfo_width() - 340)
+            self.queue_status_label.configure(wraplength=wrap)
+        except Exception:
+            pass
+
+    def _on_window_layout_change(self):
+        self._refresh_tree_scrollbar()
+        self._resize_left_tree_columns()
+        self._resize_queue_tree_columns()
+        self._update_status_wrap()
+
     def _apply_initial_layout(self):
         try:
             total = self.main_pane.winfo_width()
@@ -783,6 +835,7 @@ class App(tk.Tk):
                 self.main_pane.sashpos(0, int(total * 0.56))
         except Exception:
             pass
+        self.after_idle(self._on_window_layout_change)
 
     def toggle_lang(self):
         self.lang = "EN" if self.lang == "HU" else "HU"
@@ -830,6 +883,7 @@ class App(tk.Tk):
                 break
         apply_theme(self, self._dark_mode)
         self.refresh_queue_tree()
+        self.after_idle(self._on_window_layout_change)
 
     def set_status(self, text: str):
         self.after(0, lambda: self.status_var.set(text))
@@ -860,7 +914,7 @@ class App(tk.Tk):
     def run_job(self, fn, done=None):
         if self.worker and self.worker.is_alive():
             messagebox.showwarning(self.tr("warning"), self.tr("queue_running"))
-            return
+            return False
 
         def wrap():
             try:
@@ -877,6 +931,7 @@ class App(tk.Tk):
 
         self.worker = threading.Thread(target=wrap, daemon=True)
         self.worker.start()
+        return True
 
     def refresh_ports(self):
         if list_ports is None:
@@ -1064,6 +1119,7 @@ class App(tk.Tk):
             if item in selected:
                 self.queue_tree.selection_add(item)
         self.failures_var.set(str(failures))
+        self.after_idle(self._resize_queue_tree_columns)
         if not tasks:
             self.current_file_var.set("-")
             self.overall_var.set("0 / 0")
@@ -1148,6 +1204,7 @@ class App(tk.Tk):
 
         def done(_):
             self._set_queue_controls_enabled(True)
+            self.clear_completed_tasks()
             self.refresh_queue_tree()
             if self.cancel_event.is_set():
                 self.set_status(self.tr("queue_cancelled_done"))
