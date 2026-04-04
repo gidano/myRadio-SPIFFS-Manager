@@ -22,7 +22,7 @@ except Exception:
 
 APP_VERSION = "1.2"
 DEFAULT_BAUDRATE = 460800
-CHUNK_SIZE = 512
+CHUNK_SIZE = 96
 MAX_AUTO_RETRIES = 2
 
 
@@ -525,6 +525,7 @@ class SerialSpiFFSClient:
                 if not (len(parts) >= 2 and parts[0] == "OK" and parts[1] == "WRITE_BEGIN"):
                     raise ProtoError("bad WRITE_BEGIN reply: " + "|".join(parts))
 
+                time.sleep(0.01)
                 total_chunks = max(1, (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE)
                 uploaded = 0
                 if not data:
@@ -538,6 +539,7 @@ class SerialSpiFFSClient:
                         raise ProtoError(f"bad WRITE_DATA reply at chunk {idx}/{total_chunks} for {path}: " + "|".join(parts))
                     uploaded += len(chunk)
                     yield idx, total_chunks, uploaded
+                    time.sleep(0.005)
                 if len(data) == 0:
                     yield 1, 1, 0
                 self._write_line("WRITE_END")
@@ -588,6 +590,7 @@ class App(tk.Tk):
         self.upload_queue: list[UploadTask] = []
         self.queue_running = False
         self.current_queue_task_id: str | None = None
+        self.known_remote_dirs: set[str] = {"/"}
 
         self.title(f"{self.tr('title')} v{APP_VERSION}")
         self.geometry("1180x860")
@@ -906,6 +909,7 @@ class App(tk.Tk):
 
         def done(files):
             self.files = files
+            self._rebuild_known_remote_dirs(files)
             self.populate_tree()
             self.set_status(self.tr("maintenance_ok"))
 
@@ -938,10 +942,22 @@ class App(tk.Tk):
 
         def done(files):
             self.files = files
+            self._rebuild_known_remote_dirs(files)
             self.populate_tree()
             self.set_status(f"{len(files)} {self.tr('file')}")
 
         self.run_job(job, done)
+
+    def _rebuild_known_remote_dirs(self, files: list[RemoteFile]):
+        dirs = {"/"}
+        for rf in files:
+            path = normalize_remote_path(rf.path)
+            parts = [p for p in path.strip('/').split('/') if p]
+            current = ""
+            for part in parts[:-1]:
+                current += "/" + part
+                dirs.add(current)
+        self.known_remote_dirs = dirs
 
     def populate_tree(self):
         self.tree.delete(*self.tree.get_children())
@@ -1117,16 +1133,20 @@ class App(tk.Tk):
             messagebox.showwarning(self.tr("warning"), self.tr("queue_empty_start"))
             return
 
+        self.queue_running = True
+        self.cancel_event.clear()
+        self._set_queue_controls_enabled(False)
+        self.set_status(self.tr("status_uploading"))
+
         def job():
-            self.ensure_connected()
-            self.queue_running = True
-            self.cancel_event.clear()
-            self._set_queue_controls_enabled(False)
-            self._run_upload_queue()
-            return True
+            try:
+                self.ensure_connected()
+                self._run_upload_queue()
+                return True
+            finally:
+                self.queue_running = False
 
         def done(_):
-            self.queue_running = False
             self._set_queue_controls_enabled(True)
             self.refresh_queue_tree()
             if self.cancel_event.is_set():
@@ -1137,7 +1157,10 @@ class App(tk.Tk):
             self.refresh_list()
             self._reset_queue_runtime_labels(keep_status=True)
 
-        self.run_job(job, done)
+        started = self.run_job(job, done)
+        if not started:
+            self.queue_running = False
+            self._set_queue_controls_enabled(True)
 
     def _set_queue_controls_enabled(self, enabled: bool):
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -1165,7 +1188,15 @@ class App(tk.Tk):
         current_path = ""
         for part in [p for p in parent.strip("/").split("/") if p]:
             current_path += "/" + part
-            self.client.mkdir(current_path)
+            if current_path in self.known_remote_dirs:
+                continue
+            try:
+                self.client.mkdir(current_path)
+            except Exception as e:
+                msg = str(e).lower()
+                if not any(token in msg for token in ("exists", "exist", "already", "mkdir", "bad mkdir reply")):
+                    raise
+            self.known_remote_dirs.add(current_path)
 
     def _run_upload_queue(self):
         with self.queue_lock:
@@ -1264,8 +1295,9 @@ class App(tk.Tk):
                 last_error = e
                 if attempt < task.max_retries and not self.cancel_event.is_set():
                     task.status = "retrying"
+                    self.set_status(f"{self.tr('queue_retrying')}: {task.remote_path} | {self._localize_error(str(e))}")
                     self.after(0, self.refresh_queue_tree)
-                    time.sleep(0.3 * (attempt + 1))
+                    time.sleep(0.5 * (attempt + 1))
                     continue
                 task.status = "failed"
                 self.after(0, self.refresh_queue_tree)
