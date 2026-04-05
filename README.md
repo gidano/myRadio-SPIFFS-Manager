@@ -39,6 +39,7 @@ A **myRadio SPIFFS Manager** egy egyszerű Windows alkalmazás, amely lehetővé
 - Két nyelv támogatása (HU / EN)
 - Windows sötét/világos téma használata
 - Státuszsor részletes visszajelzéssel (pl. célmappa)
+- SPIFFS partícióméret megadásával bekapcsolható helyellenőrző funkció
 
 ### Használat
 1. Válaszd ki a COM portot
@@ -76,6 +77,7 @@ A részletes feltételeket a [LICENSE](LICENSE) fájlban találja.
 - Dual language support (HU / EN)
 - Using the Windows dark/light theme
 - Detailed status feedback (e.g. target folder)
+- SPIFFS: a disk check function that can be enabled by specifying the partition size
 
 ### Usage
 1. Select COM port
