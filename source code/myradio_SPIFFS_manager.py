@@ -11,7 +11,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 try:
     import serial
@@ -24,6 +24,7 @@ APP_VERSION = "1.3"
 DEFAULT_BAUDRATE = 460800
 CHUNK_SIZE = 96
 MAX_AUTO_RETRIES = 2
+DEFAULT_SPIFFS_CAPACITY_KB = 896
 
 
 TEXT = {
@@ -43,6 +44,15 @@ TEXT = {
         "download": "Kijelölt mentése",
         "reboot": "Rádió újraindítása",
         "lang": "Nyelv: HU / EN",
+        "spiffs_capacity": "SPIFFS méret",
+        "set_spiffs_capacity": "SPIFFS méret beállítása",
+        "spiffs_capacity_prompt": "Add meg a teljes SPIFFS méretet KB-ban.\nÜresen hagyva a helyellenőrzés kikapcsolva.",
+        "spiffs_capacity_disabled": "SPIFFS helyellenőrzés: kikapcsolva",
+        "spiffs_capacity_set": "SPIFFS helyellenőrzés aktív: {value} KB",
+        "space_check_insufficient": "Kevés a becsült szabad hely.\n\nBecsült szabad hely: {free}\nVárósor mérete: {need}\n\nFeltöltés megszakítva.",
+        "space_check_low": "Kevés a becsült szabad hely.\n\nBecsült szabad hely: {free}\nVárósor mérete: {need}\n\nA feltöltés még elindítható, de nagy az open_failed hiba esélye.\nFolytatod?",
+        "critical_spiffs_write_error": "Kritikus SPIFFS írási hiba, a várósor leállítva.",
+        "open_failed_hint": "A rádió nem tudta megnyitni a célfájlt írásra. Ez általában kevés vagy töredezett SPIFFS szabad helyre utal.",
         "tree": "A rádió SPIFFS tartalma",
         "type": "Típus",
         "size": "Méret",
@@ -131,6 +141,15 @@ TEXT = {
         "download": "Save selected",
         "reboot": "Reboot radio",
         "lang": "Language: HU / EN",
+        "spiffs_capacity": "SPIFFS size",
+        "set_spiffs_capacity": "Set SPIFFS size",
+        "spiffs_capacity_prompt": "Enter total SPIFFS size in KB.\nLeave empty to disable space checks.",
+        "spiffs_capacity_disabled": "SPIFFS space check: disabled",
+        "spiffs_capacity_set": "SPIFFS space check enabled: {value} KB",
+        "space_check_insufficient": "Estimated free space is too low.\n\nEstimated free space: {free}\nQueue size: {need}\n\nUpload aborted.",
+        "space_check_low": "Estimated free space is low.\n\nEstimated free space: {free}\nQueue size: {need}\n\nUpload can still be started, but open_failed errors are likely.\nContinue?",
+        "critical_spiffs_write_error": "Critical SPIFFS write error, queue stopped.",
+        "open_failed_hint": "The radio could not open the target file for writing. This usually points to low or fragmented SPIFFS free space.",
         "tree": "Radio SPIFFS contents",
         "type": "Type",
         "size": "Size",
@@ -244,6 +263,33 @@ def fmt_size(size: int) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024
     return f"{size} B"
+
+
+
+
+def parse_positive_int_or_none(value: str) -> int | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if not digits:
+        return None
+    number = int(digits)
+    return number if number > 0 else None
+
+
+def is_probable_spiffs_open_failed(error_text: str) -> bool:
+    msg = (error_text or "").lower()
+    return "open_failed" in msg or ("write_begin" in msg and "open" in msg and "failed" in msg)
+
+
+def build_open_failed_hint(base_error: str, localized_hint: str) -> str:
+    base_error = (base_error or "").strip()
+    if not base_error:
+        return localized_hint
+    if localized_hint in base_error:
+        return base_error
+    return f"{base_error} | {localized_hint}"
 
 
 def set_windows_app_id():
@@ -591,6 +637,8 @@ class App(tk.Tk):
         self.queue_running = False
         self.current_queue_task_id: str | None = None
         self.known_remote_dirs: set[str] = {"/"}
+        self.queue_stop_reason: str | None = None
+        self.spiffs_capacity_kb = DEFAULT_SPIFFS_CAPACITY_KB
 
         self.title(f"{self.tr('title')} v{APP_VERSION}")
         self.geometry("1180x860")
@@ -619,7 +667,10 @@ class App(tk.Tk):
 
         self._build_ui()
         self.refresh_ports()
+        self._tree_scrollbar_after_id = None
+        self._queue_tree_scrollbar_after_id = None
         self.after(100, self._refresh_tree_scrollbar)
+        self.after(100, self._refresh_queue_tree_scrollbar)
         self.bind("<Configure>", lambda event: self.after_idle(self._on_window_layout_change))
         if self._dark_mode:
             self.after(50, lambda: apply_dark_title_bar(self))
@@ -646,6 +697,8 @@ class App(tk.Tk):
         self.btn_maint.grid(row=0, column=5, padx=4)
         self.btn_lang = ttk.Button(top, text=self.tr("lang"), command=self.toggle_lang)
         self.btn_lang.grid(row=0, column=6, padx=4)
+        self.btn_capacity = ttk.Button(top, text=self.tr("spiffs_capacity"), command=self.set_spiffs_capacity)
+        self.btn_capacity.grid(row=0, column=7, padx=4)
         top.columnconfigure(1, weight=1)
 
         actions = ttk.Frame(self, padding=(8, 0, 8, 8))
@@ -677,18 +730,25 @@ class App(tk.Tk):
 
         self.left_panel = ttk.LabelFrame(left, text=self.tr("tree"), padding=8)
         self.left_panel.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(self.left_panel, columns=("type", "size"), show="tree headings", selectmode="extended")
+        self.tree_wrap = ttk.Frame(self.left_panel)
+        self.tree_wrap.pack(fill="both", expand=True)
+        self.tree_wrap.rowconfigure(0, weight=1)
+        self.tree_wrap.columnconfigure(0, weight=1)
+        self.tree = ttk.Treeview(self.tree_wrap, columns=("type", "size"), show="tree headings", selectmode="extended")
         self.tree.heading("#0", text=self.tr("tree"))
         self.tree.heading("type", text=self.tr("type"))
         self.tree.heading("size", text=self.tr("size"))
         self.tree.column("#0", width=430, minwidth=160, anchor="w", stretch=True)
         self.tree.column("type", width=95, minwidth=90, anchor="w", stretch=False)
         self.tree.column("size", width=85, minwidth=80, anchor="w", stretch=False)
-        self.tree_ys = ttk.Scrollbar(self.left_panel, orient="vertical", command=self.tree.yview)
+        self.tree_ys = ttk.Scrollbar(self.tree_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=self._on_tree_yview)
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.bind("<<TreeviewOpen>>", lambda event: self.after_idle(self._refresh_tree_scrollbar))
-        self.tree.bind("<<TreeviewClose>>", lambda event: self.after_idle(self._refresh_tree_scrollbar))
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree_ys.grid(row=0, column=1, sticky="ns")
+        self.tree_ys.grid_remove()
+        self.tree.bind("<<TreeviewOpen>>", lambda event: self._schedule_tree_scrollbar_refresh())
+        self.tree.bind("<<TreeviewClose>>", lambda event: self._schedule_tree_scrollbar_refresh())
+        self.tree.bind("<Configure>", lambda event: self._schedule_tree_scrollbar_refresh())
 
         self.queue_panel = ttk.LabelFrame(right, text=self.tr("queue"), padding=8)
         self.queue_panel.pack(fill="both", expand=True)
@@ -706,10 +766,12 @@ class App(tk.Tk):
         self.btn_queue_remove = ttk.Button(queue_buttons, text=self.tr("queue_remove"), command=self.remove_selected_tasks)
         self.btn_queue_remove.pack(side="left", padx=2)
 
-        queue_tree_wrap = ttk.Frame(self.queue_panel)
-        queue_tree_wrap.pack(fill="both", expand=True)
+        self.queue_tree_wrap = ttk.Frame(self.queue_panel)
+        self.queue_tree_wrap.pack(fill="both", expand=True)
+        self.queue_tree_wrap.rowconfigure(0, weight=1)
+        self.queue_tree_wrap.columnconfigure(0, weight=1)
 
-        self.queue_tree = ttk.Treeview(queue_tree_wrap, columns=("target", "status", "progress", "size"), show="tree headings", height=18, selectmode="extended")
+        self.queue_tree = ttk.Treeview(self.queue_tree_wrap, columns=("target", "status", "progress", "size"), show="tree headings", height=18, selectmode="extended")
         self.queue_tree.heading("#0", text=self.tr("queue_name"))
         self.queue_tree.heading("target", text=self.tr("queue_target"))
         self.queue_tree.heading("status", text=self.tr("queue_status"))
@@ -720,10 +782,12 @@ class App(tk.Tk):
         self.queue_tree.column("status", width=70, minwidth=90, anchor="w", stretch=True)
         self.queue_tree.column("progress", width=60, minwidth=90, anchor="w", stretch=True)
         self.queue_tree.column("size", width=60, minwidth=80, anchor="w", stretch=True)
-        self.queue_tree_ys = ttk.Scrollbar(queue_tree_wrap, orient="vertical", command=self.queue_tree.yview)
-        self.queue_tree.configure(yscrollcommand=self.queue_tree_ys.set)
-        self.queue_tree.pack(side="left", fill="both", expand=True)
-        self.queue_tree_ys.pack(side="right", fill="y")
+        self.queue_tree_ys = ttk.Scrollbar(self.queue_tree_wrap, orient="vertical", command=self.queue_tree.yview)
+        self.queue_tree.configure(yscrollcommand=self._on_queue_tree_yview)
+        self.queue_tree.grid(row=0, column=0, sticky="nsew")
+        self.queue_tree_ys.grid(row=0, column=1, sticky="ns")
+        self.queue_tree_ys.grid_remove()
+        self.queue_tree.bind("<Configure>", lambda event: self._schedule_queue_tree_scrollbar_refresh())
 
         self.progress_box = ttk.LabelFrame(self.queue_panel, text=self.tr("queue_progress"), padding=8)
         self.progress_box.pack(fill="x", pady=(8, 0))
@@ -762,26 +826,77 @@ class App(tk.Tk):
         bottom.pack(fill="x")
         ttk.Label(bottom, text=self.tr("footer")).pack(side="right")
 
+    def _schedule_tree_scrollbar_refresh(self):
+        try:
+            if self._tree_scrollbar_after_id is not None:
+                self.after_cancel(self._tree_scrollbar_after_id)
+        except Exception:
+            pass
+        self._tree_scrollbar_after_id = self.after_idle(self._refresh_tree_scrollbar)
+
+    def _schedule_queue_tree_scrollbar_refresh(self):
+        try:
+            if self._queue_tree_scrollbar_after_id is not None:
+                self.after_cancel(self._queue_tree_scrollbar_after_id)
+        except Exception:
+            pass
+        self._queue_tree_scrollbar_after_id = self.after_idle(self._refresh_queue_tree_scrollbar)
+
+    def _set_queue_tree_scrollbar_visible(self, visible: bool):
+        try:
+            if visible:
+                self.queue_tree_ys.grid()
+            else:
+                self.queue_tree_ys.grid_remove()
+        except Exception:
+            pass
+
+    def _on_queue_tree_yview(self, first, last):
+        self.queue_tree_ys.set(first, last)
+        try:
+            need_scroll = not (float(first) <= 0.0 and float(last) >= 1.0)
+        except Exception:
+            need_scroll = True
+        self._set_queue_tree_scrollbar_visible(need_scroll)
+
+    def _refresh_queue_tree_scrollbar(self):
+        self._queue_tree_scrollbar_after_id = None
+        try:
+            self.update_idletasks()
+            first, last = self.queue_tree.yview()
+            need_scroll = not (float(first) <= 0.0 and float(last) >= 1.0)
+            self._set_queue_tree_scrollbar_visible(need_scroll)
+            if need_scroll:
+                self.queue_tree_ys.set(first, last)
+        except Exception:
+            self._set_queue_tree_scrollbar_visible(False)
+
     def _set_tree_scrollbar_visible(self, visible: bool):
-        if visible:
-            if not self.tree_ys.winfo_ismapped():
-                self.tree_ys.pack(side="right", fill="y")
-        else:
-            if self.tree_ys.winfo_ismapped():
-                self.tree_ys.pack_forget()
+        try:
+            if visible:
+                self.tree_ys.grid()
+            else:
+                self.tree_ys.grid_remove()
+        except Exception:
+            pass
 
     def _on_tree_yview(self, first, last):
         self.tree_ys.set(first, last)
         try:
-            self._set_tree_scrollbar_visible(not (float(first) <= 0.0 and float(last) >= 1.0))
+            need_scroll = not (float(first) <= 0.0 and float(last) >= 1.0)
         except Exception:
-            self._set_tree_scrollbar_visible(True)
+            need_scroll = True
+        self._set_tree_scrollbar_visible(need_scroll)
 
     def _refresh_tree_scrollbar(self):
-        self.update_idletasks()
+        self._tree_scrollbar_after_id = None
         try:
+            self.update_idletasks()
             first, last = self.tree.yview()
-            self._set_tree_scrollbar_visible(not (float(first) <= 0.0 and float(last) >= 1.0))
+            need_scroll = not (float(first) <= 0.0 and float(last) >= 1.0)
+            self._set_tree_scrollbar_visible(need_scroll)
+            if need_scroll:
+                self.tree_ys.set(first, last)
         except Exception:
             self._set_tree_scrollbar_visible(False)
 
@@ -814,6 +929,7 @@ class App(tk.Tk):
             self.queue_tree.column("status", width=status_w, minwidth=90, stretch=False)
             self.queue_tree.column("progress", width=progress_w, minwidth=90, stretch=False)
             self.queue_tree.column("size", width=size_w, minwidth=80, stretch=False)
+            self._schedule_queue_tree_scrollbar_refresh()
         except Exception:
             pass
 
@@ -825,7 +941,8 @@ class App(tk.Tk):
             pass
 
     def _on_window_layout_change(self):
-        self._refresh_tree_scrollbar()
+        self._schedule_tree_scrollbar_refresh()
+        self._schedule_queue_tree_scrollbar_refresh()
         self._resize_left_tree_columns()
         self._resize_queue_tree_columns()
         self._update_status_wrap()
@@ -839,6 +956,24 @@ class App(tk.Tk):
             pass
         self.after_idle(self._on_window_layout_change)
 
+
+    def set_spiffs_capacity(self):
+        initial = "" if self.spiffs_capacity_kb is None else str(self.spiffs_capacity_kb)
+        value = simpledialog.askstring(
+            self.tr("set_spiffs_capacity"),
+            self.tr("spiffs_capacity_prompt"),
+            initialvalue=initial,
+            parent=self,
+        )
+        if value is None:
+            return
+        parsed = parse_positive_int_or_none(value)
+        self.spiffs_capacity_kb = parsed
+        if parsed is None:
+            self.set_status(self.tr("spiffs_capacity_disabled"))
+        else:
+            self.set_status(self.tr("spiffs_capacity_set").format(value=parsed))
+
     def toggle_lang(self):
         self.lang = "EN" if self.lang == "HU" else "HU"
         self.title(f"{self.tr('title')} v{APP_VERSION}")
@@ -848,6 +983,7 @@ class App(tk.Tk):
         self.btn_disconnect.config(text=self.tr("disconnect"))
         self.btn_maint.config(text=self.tr("maintenance"))
         self.btn_lang.config(text=self.tr("lang"))
+        self.btn_capacity.config(text=self.tr("spiffs_capacity"))
         self.btn_list.config(text=self.tr("list"))
         self.btn_backup.config(text=self.tr("backup"))
         self.btn_restore.config(text=self.tr("restore"))
@@ -908,6 +1044,8 @@ class App(tk.Tk):
             "bad REBOOT reply": "Hibás újraindítási válasz",
             "pyserial not installed": "A pyserial nincs telepítve",
             "write failed after retries for": "Az írás többszöri próbálkozás után is sikertelen ennél:",
+            "ERR|WRITE_BEGIN|open_failed": "Hibás íráskezdési válasz: a fájl írásra nem nyitható meg (open_failed)",
+            "open_failed": "a fájl írásra nem nyitható meg (open_failed)",
         }
         out = text
         for src, dst in replacements.items():
@@ -1100,11 +1238,11 @@ class App(tk.Tk):
                         self.tree.see(selected[0])
                 except Exception:
                     pass
-                self._refresh_tree_scrollbar()
+                self._schedule_tree_scrollbar_refresh()
 
             self.after_idle(restore_view)
         else:
-            self.after_idle(self._refresh_tree_scrollbar)
+            self._schedule_tree_scrollbar_refresh()
 
     def _item_remote_path(self, item_id: str) -> tuple[str, bool]:
         parts = []
@@ -1194,6 +1332,7 @@ class App(tk.Tk):
                 self.queue_tree.selection_add(item)
         self.failures_var.set(str(failures))
         self.after_idle(self._resize_queue_tree_columns)
+        self._schedule_queue_tree_scrollbar_refresh()
         if not tasks:
             self.current_file_var.set("-")
             self.overall_var.set("0 / 0")
@@ -1253,6 +1392,49 @@ class App(tk.Tk):
         self.cancel_event.set()
         self.set_status(self.tr("queue_cancel_requested"))
 
+
+    def _current_used_bytes(self) -> int:
+        return sum(rf.size for rf in self.files)
+
+    def _estimated_free_bytes(self) -> int | None:
+        if self.spiffs_capacity_kb is None:
+            return None
+        total = self.spiffs_capacity_kb * 1024
+        used = self._current_used_bytes()
+        return max(0, total - used)
+
+    def _pending_queue_bytes(self) -> int:
+        with self.queue_lock:
+            return sum(t.size for t in self.upload_queue if t.status in {"waiting", "retrying"})
+
+    def _preflight_check_available_space(self) -> bool:
+        free_bytes = self._estimated_free_bytes()
+        pending_bytes = self._pending_queue_bytes()
+        if free_bytes is None or pending_bytes <= 0:
+            return True
+        if pending_bytes > free_bytes:
+            messagebox.showwarning(
+                self.tr("warning"),
+                self.tr("space_check_insufficient").format(
+                    free=fmt_size(free_bytes),
+                    need=fmt_size(pending_bytes),
+                ),
+            )
+            return False
+        safety_floor = 96 * 1024
+        if free_bytes - pending_bytes < safety_floor:
+            return messagebox.askyesno(
+                self.tr("warning"),
+                self.tr("space_check_low").format(
+                    free=fmt_size(free_bytes),
+                    need=fmt_size(pending_bytes),
+                ),
+            )
+        return True
+
+    def _is_critical_spiffs_write_error(self, error_text: str) -> bool:
+        return is_probable_spiffs_open_failed(error_text)
+
     def start_queue(self):
         if self.queue_running:
             messagebox.showwarning(self.tr("warning"), self.tr("queue_running"))
@@ -1262,7 +1444,10 @@ class App(tk.Tk):
         if not pending:
             messagebox.showwarning(self.tr("warning"), self.tr("queue_empty_start"))
             return
+        if not self._preflight_check_available_space():
+            return
 
+        self.queue_stop_reason = None
         self.queue_running = True
         self.cancel_event.clear()
         self._set_queue_controls_enabled(False)
@@ -1280,7 +1465,10 @@ class App(tk.Tk):
             self._set_queue_controls_enabled(True)
             self.clear_completed_tasks()
             self.refresh_queue_tree()
-            if self.cancel_event.is_set():
+            if self.queue_stop_reason:
+                self.set_status(self.queue_stop_reason)
+                messagebox.showwarning(self.tr("warning"), self.queue_stop_reason)
+            elif self.cancel_event.is_set():
                 self.set_status(self.tr("queue_cancelled_done"))
             else:
                 self.set_status(self.tr("queue_finished"))
@@ -1304,6 +1492,7 @@ class App(tk.Tk):
         self.after(0, lambda: self.btn_queue_remove.config(state=state))
 
     def _reset_queue_runtime_labels(self, keep_status: bool = False):
+        self.queue_stop_reason = None
         self.progress_var.set(0.0)
         self.overall_progress_var.set(0.0)
         self.current_file_var.set("-")
@@ -1423,11 +1612,20 @@ class App(tk.Tk):
                 return True
             except Exception as e:
                 task.retries_done = attempt + 1
-                task.error = str(e)
+                raw_error = str(e)
+                if self._is_critical_spiffs_write_error(raw_error):
+                    localized = build_open_failed_hint(self._localize_error(raw_error), self.tr("open_failed_hint"))
+                    task.error = localized
+                    task.status = "failed"
+                    self.queue_stop_reason = self.tr("critical_spiffs_write_error") + "\n\n" + localized
+                    self.cancel_event.set()
+                    self.after(0, self.refresh_queue_tree)
+                    return False
+                task.error = self._localize_error(raw_error)
                 last_error = e
                 if attempt < task.max_retries and not self.cancel_event.is_set():
                     task.status = "retrying"
-                    self.set_status(f"{self.tr('queue_retrying')}: {task.remote_path} | {self._localize_error(str(e))}")
+                    self.set_status(f"{self.tr('queue_retrying')}: {task.remote_path} | {self._localize_error(raw_error)}")
                     self.after(0, self.refresh_queue_tree)
                     time.sleep(0.5 * (attempt + 1))
                     continue
