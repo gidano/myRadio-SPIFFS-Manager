@@ -677,7 +677,7 @@ class App(tk.Tk):
 
         self.left_panel = ttk.LabelFrame(left, text=self.tr("tree"), padding=8)
         self.left_panel.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(self.left_panel, columns=("type", "size"), show="tree headings")
+        self.tree = ttk.Treeview(self.left_panel, columns=("type", "size"), show="tree headings", selectmode="extended")
         self.tree.heading("#0", text=self.tr("tree"))
         self.tree.heading("type", text=self.tr("type"))
         self.tree.heading("size", text=self.tr("size"))
@@ -703,11 +703,13 @@ class App(tk.Tk):
         self.btn_queue_start.pack(side="left", padx=2)
         self.btn_queue_cancel = ttk.Button(queue_buttons, text=self.tr("queue_cancel"), command=self.cancel_queue)
         self.btn_queue_cancel.pack(side="left", padx=2)
+        self.btn_queue_remove = ttk.Button(queue_buttons, text=self.tr("queue_remove"), command=self.remove_selected_tasks)
+        self.btn_queue_remove.pack(side="left", padx=2)
 
         queue_tree_wrap = ttk.Frame(self.queue_panel)
         queue_tree_wrap.pack(fill="both", expand=True)
 
-        self.queue_tree = ttk.Treeview(queue_tree_wrap, columns=("target", "status", "progress", "size"), show="tree headings", height=18)
+        self.queue_tree = ttk.Treeview(queue_tree_wrap, columns=("target", "status", "progress", "size"), show="tree headings", height=18, selectmode="extended")
         self.queue_tree.heading("#0", text=self.tr("queue_name"))
         self.queue_tree.heading("target", text=self.tr("queue_target"))
         self.queue_tree.heading("status", text=self.tr("queue_status"))
@@ -858,6 +860,7 @@ class App(tk.Tk):
         self.btn_queue_add_folder.config(text=self.tr("queue_add_folder"))
         self.btn_queue_start.config(text=self.tr("queue_start"))
         self.btn_queue_cancel.config(text=self.tr("queue_cancel"))
+        self.btn_queue_remove.config(text=self.tr("queue_remove"))
         self.tree.heading("#0", text=self.tr("tree"))
         self.tree.heading("type", text=self.tr("type"))
         self.tree.heading("size", text=self.tr("size"))
@@ -1014,7 +1017,44 @@ class App(tk.Tk):
                 dirs.add(current)
         self.known_remote_dirs = dirs
 
-    def populate_tree(self):
+    def _capture_tree_state(self) -> dict:
+        state = {
+            "open_paths": set(),
+            "selected_paths": [],
+            "focus_path": None,
+            "yview": 0.0,
+        }
+        try:
+            for item_id in self.tree.selection():
+                path, _ = self._item_remote_path(item_id)
+                state["selected_paths"].append(path)
+        except Exception:
+            pass
+        try:
+            focus_id = self.tree.focus()
+            if focus_id:
+                state["focus_path"], _ = self._item_remote_path(focus_id)
+        except Exception:
+            pass
+        try:
+            state["yview"] = float(self.tree.yview()[0])
+        except Exception:
+            pass
+
+        def walk(parent=""):
+            for child in self.tree.get_children(parent):
+                try:
+                    path, is_file = self._item_remote_path(child)
+                    if not is_file and self.tree.item(child, "open"):
+                        state["open_paths"].add(path)
+                except Exception:
+                    pass
+                walk(child)
+
+        walk("")
+        return state
+
+    def populate_tree(self, restore_state: dict | None = None):
         self.tree.delete(*self.tree.get_children())
         nodes = {"/": ""}
         for rf in self.files:
@@ -1032,7 +1072,39 @@ class App(tk.Tk):
                     nodes[full] = node
                 parent_id = nodes[full]
                 current_path = full
-        self.after_idle(self._refresh_tree_scrollbar)
+
+        if restore_state:
+            for path in restore_state.get("open_paths", set()):
+                item_id = nodes.get(path)
+                if item_id:
+                    self.tree.item(item_id, open=True)
+
+            selected_ids = []
+            for path in restore_state.get("selected_paths", []):
+                item_id = nodes.get(path)
+                if item_id:
+                    selected_ids.append(item_id)
+            if selected_ids:
+                self.tree.selection_set(selected_ids)
+
+            focus_path = restore_state.get("focus_path")
+            if focus_path and focus_path in nodes:
+                self.tree.focus(nodes[focus_path])
+
+            def restore_view():
+                try:
+                    yview = float(restore_state.get("yview", 0.0))
+                    self.tree.yview_moveto(yview)
+                    selected = self.tree.selection()
+                    if selected:
+                        self.tree.see(selected[0])
+                except Exception:
+                    pass
+                self._refresh_tree_scrollbar()
+
+            self.after_idle(restore_view)
+        else:
+            self.after_idle(self._refresh_tree_scrollbar)
 
     def _item_remote_path(self, item_id: str) -> tuple[str, bool]:
         parts = []
@@ -1087,15 +1159,17 @@ class App(tk.Tk):
         if selected_remote:
             if selected_is_file:
                 target_root = normalize_remote_path("/".join(selected_remote.split("/")[:-1]) or "/")
+                preserve_local_folder_name = False
             else:
                 target_root = normalize_remote_path(selected_remote)
-            preserve_local_folder_name = False
+                preserve_local_folder_name = True
         else:
             target_root = "/"
             preserve_local_folder_name = True
         for p in files:
             rel = p.relative_to(root).as_posix()
-            remote_path = normalize_remote_path(f"/{root.name}/{rel}" if preserve_local_folder_name else f"{target_root}/{rel}")
+            remote_base = f"{target_root}/{root.name}" if preserve_local_folder_name else target_root
+            remote_path = normalize_remote_path(f"{remote_base}/{rel}")
             task = UploadTask(local_path=p, remote_path=remote_path, size=p.stat().st_size)
             self._queue_append(task)
         self.set_status(self.tr("queue_added"))
@@ -1146,7 +1220,7 @@ class App(tk.Tk):
             return
         with self.queue_lock:
             self.upload_queue = [t for t in self.upload_queue if t.task_id not in selected]
-        self.refresh_queue_tree()
+        self.refresh_both_views()
 
     def clear_completed_tasks(self):
         if self.queue_running:
@@ -1211,7 +1285,7 @@ class App(tk.Tk):
             else:
                 self.set_status(self.tr("queue_finished"))
             self.cancel_event.clear()
-            self.refresh_list()
+            self.refresh_both_views(background=True)
             self._reset_queue_runtime_labels(keep_status=True)
 
         started = self.run_job(job, done)
@@ -1227,6 +1301,7 @@ class App(tk.Tk):
         self.after(0, lambda: self.btn_upload_files.config(state=state))
         self.after(0, lambda: self.btn_upload_folder.config(state=state))
         self.after(0, lambda: self.btn_queue_cancel.config(state=tk.NORMAL if not enabled else tk.DISABLED))
+        self.after(0, lambda: self.btn_queue_remove.config(state=state))
 
     def _reset_queue_runtime_labels(self, keep_status: bool = False):
         self.progress_var.set(0.0)
@@ -1365,6 +1440,27 @@ class App(tk.Tk):
         self.after(0, self.refresh_queue_tree)
         return False
 
+    def refresh_both_views(self, background: bool = False):
+        def job():
+            if self.client.ser:
+                files = self.client.list_files()
+            else:
+                files = self.files
+            return files
+
+        tree_state = self._capture_tree_state()
+
+        def done(files):
+            self.files = files
+            self._rebuild_known_remote_dirs(files)
+            self.populate_tree(restore_state=tree_state)
+            self.refresh_queue_tree()
+
+        if background:
+            self.run_job(job, done)
+        else:
+            done(self.client.list_files() if self.client.ser else self.files)
+
     def backup_zip(self):
         out = filedialog.asksaveasfilename(title=self.tr("save_backup_title"), defaultextension=".zip", filetypes=[("ZIP", "*.zip")], initialfile="myradio_spiffs_mentes.zip" if self.lang == "HU" else "myradio_spiffs_backup.zip")
         if not out:
@@ -1393,6 +1489,7 @@ class App(tk.Tk):
 
         def done(_):
             self._reset_transfer_metrics()
+            self.refresh_both_views(background=True)
             self.set_status(self.tr("backup_done"))
             messagebox.showinfo(self.tr("done"), self.tr("backup_done"))
 
@@ -1429,7 +1526,7 @@ class App(tk.Tk):
 
         def done(_):
             self._reset_transfer_metrics()
-            self.refresh_list()
+            self.refresh_both_views(background=True)
             messagebox.showinfo(self.tr("done"), self.tr("restore_done"))
 
         self.run_job(job, done)
@@ -1456,6 +1553,7 @@ class App(tk.Tk):
             return True
 
         def done(_):
+            self.refresh_both_views(background=True)
             messagebox.showinfo(self.tr("done"), self.tr("download_done"))
 
         self.run_job(job, done)
@@ -1465,18 +1563,28 @@ class App(tk.Tk):
         if not selection:
             messagebox.showwarning(self.tr("warning"), self.tr("tree_no_selection"))
             return
-        path, is_file = self._item_remote_path(selection[0])
+
+        selected_items = [self._item_remote_path(item_id) for item_id in selection]
 
         def job():
             self.ensure_connected()
             files = self.client.list_files()
-            targets = [path] if is_file else [f.path for f in files if f.path == path or f.path.startswith(path.rstrip("/") + "/")]
-            for target in sorted(targets, reverse=True):
+            all_file_paths = [f.path for f in files]
+            target_set = set()
+            for path, is_file in selected_items:
+                if is_file:
+                    target_set.add(path)
+                else:
+                    prefix = path.rstrip("/") + "/"
+                    for file_path in all_file_paths:
+                        if file_path == path or file_path.startswith(prefix):
+                            target_set.add(file_path)
+            for target in sorted(target_set, key=lambda x: (x.count("/"), x.lower()), reverse=True):
                 self.client.delete_file(target)
             return True
 
         def done(_):
-            self.refresh_list()
+            self.refresh_both_views(background=True)
             messagebox.showinfo(self.tr("done"), self.tr("delete_done"))
 
         self.run_job(job, done)
@@ -1489,6 +1597,7 @@ class App(tk.Tk):
             return True
 
         def done(_):
+            self.refresh_both_views(background=True)
             messagebox.showinfo(self.tr("done"), self.tr("reboot_done"))
 
         self.run_job(job, done)
