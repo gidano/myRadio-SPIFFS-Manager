@@ -1,9 +1,9 @@
 # LittleFS-SPIFFS Partition Manager v0.3.4
 
-Rövid, Windows alatt futtatható Python/Tkinter segédprogram ESP32 rádiók LittleFS/SPIFFS fájlrendszerének kezeléséhez soros karbantartó protokollon keresztül. 
-Az ESP32 szoftverét fel kell készíteni a használatához!
-Telepített Python környezetben futtasd a .py fájlt. Ez működik Linux alatt is!
-Ha a fenti környezet nincs telepítve, használd az .exe fájlt, ez tartalmazza a futtatási környezetet is!
+Rövid, Windows alatt futtatható Python/Tkinter segédprogram ESP32 rádiók LittleFS/SPIFFS fájlrendszerének kezeléséhez soros karbantartó protokollon keresztül.<br> 
+Az ESP32 szoftverét fel kell készíteni a használatához!<br>
+Telepített Python környezetben futtasd a .py fájlt. Ez működik Linux alatt is!<br>
+Ha a fenti környezet nincs telepítve, használd az .exe fájlt, ez tartalmazza a futtatási környezetet is!<br>
 
 ## Fő funkciók
 
